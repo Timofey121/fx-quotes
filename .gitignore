@@ -1,0 +1,6 @@
+.env
+.idea/
+.DS_Store
+coverage.out
+bin/
+/fx-quotes
