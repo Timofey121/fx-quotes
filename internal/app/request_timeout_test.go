@@ -41,7 +41,7 @@ func TestRequestTimeoutReleasesAdmissionConnection(t *testing.T) {
 	providerServer := httptest.NewServer(provider.New(provider.Config{}))
 	t.Cleanup(providerServer.Close)
 	configuration := e2eConfig(t, databaseURL, schema, providerServer.URL)
-	configuration.RequestTimeout = 100 * time.Millisecond
+	configuration.RequestTimeout = 250 * time.Millisecond
 	configuration.WriteTimeout = time.Second
 	application, cancel, done := startE2EApplication(t, configuration)
 	t.Cleanup(func() {
@@ -82,10 +82,13 @@ func TestRequestTimeoutReleasesAdmissionConnection(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(time.Second)
-	for application.pool.Stat().AcquiredConns() != 0 && time.Now().Before(deadline) {
+	acquired := application.pool.Stat().AcquiredConns()
+	for acquired != 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
+		acquired = application.pool.Stat().AcquiredConns()
 	}
-	if acquired := application.pool.Stat().AcquiredConns(); acquired != 0 {
+	// Проверяем тот же снимок: между чтениями соединение может занять worker.
+	if acquired != 0 {
 		t.Fatalf("timed-out admission kept %d database connections while advisory lock remains held", acquired)
 	}
 	if err = lock.Rollback(ctx); err != nil {
