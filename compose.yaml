@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fxquotes}
+      POSTGRES_USER: ${POSTGRES_USER:-fxquotes}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fxquotes}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  app:
+    build:
+      context: .
+    environment:
+      # Для изменения порта слушателя вместе настройте FX_QUOTES_CONTAINER_PORT,
+      # FX_QUOTES_HOST_PORT и FX_QUOTES_HEALTHCHECK_URL.
+      FX_QUOTES_LISTEN_ADDR: ${FX_QUOTES_LISTEN_ADDR:-:8080}
+      FX_QUOTES_HEALTHCHECK_URL: ${FX_QUOTES_HEALTHCHECK_URL:-http://127.0.0.1:8080}
+      # Не заданный URL отсутствует в окружении контейнера; явный URL имеет приоритет.
+      FX_QUOTES_DATABASE_URL:
+      FX_QUOTES_DATABASE_HOST: ${FX_QUOTES_DATABASE_HOST:-postgres}
+      FX_QUOTES_DATABASE_PORT: ${FX_QUOTES_DATABASE_PORT:-5432}
+      FX_QUOTES_DATABASE_USER: ${POSTGRES_USER:-fxquotes}
+      FX_QUOTES_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-fxquotes}
+      FX_QUOTES_DATABASE_NAME: ${POSTGRES_DB:-fxquotes}
+      # Исключение без TLS действует только для локального сервиса postgres.
+      FX_QUOTES_DATABASE_INSECURE_HOST: postgres
+      FX_QUOTES_PROVIDER_URL: ${FX_QUOTES_PROVIDER_URL:-https://api.frankfurter.dev}
+      FX_QUOTES_PROVIDER_TIMEOUT: ${FX_QUOTES_PROVIDER_TIMEOUT:-5s}
+      FX_QUOTES_HTTP_READ_TIMEOUT: ${FX_QUOTES_HTTP_READ_TIMEOUT:-10s}
+      FX_QUOTES_HTTP_WRITE_TIMEOUT: ${FX_QUOTES_HTTP_WRITE_TIMEOUT:-10s}
+      FX_QUOTES_REQUEST_TIMEOUT: ${FX_QUOTES_REQUEST_TIMEOUT:-5s}
+      FX_QUOTES_WORKER_COUNT: ${FX_QUOTES_WORKER_COUNT:-2}
+      FX_QUOTES_POLL_INTERVAL: ${FX_QUOTES_POLL_INTERVAL:-500ms}
+      FX_QUOTES_RECOVERY_INTERVAL: ${FX_QUOTES_RECOVERY_INTERVAL:-1m}
+      FX_QUOTES_WORKER_ERROR_DELAY: ${FX_QUOTES_WORKER_ERROR_DELAY:-1s}
+      FX_QUOTES_LEASE_DURATION: ${FX_QUOTES_LEASE_DURATION:-15s}
+      FX_QUOTES_MAX_ATTEMPTS: ${FX_QUOTES_MAX_ATTEMPTS:-3}
+      FX_QUOTES_MAX_ACTIVE: ${FX_QUOTES_MAX_ACTIVE:-100}
+      FX_QUOTES_LOG_LEVEL: ${FX_QUOTES_LOG_LEVEL:-info}
+      FX_QUOTES_SHUTDOWN_TIMEOUT: ${FX_QUOTES_SHUTDOWN_TIMEOUT:-15s}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${FX_QUOTES_HOST_PORT:-8080}:${FX_QUOTES_CONTAINER_PORT:-8080}"
+    stop_grace_period: ${FX_QUOTES_STOP_GRACE_PERIOD:-5m10s}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - $${FX_QUOTES_HEALTHCHECK_URL:-http://127.0.0.1:8080}/health/ready >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+volumes:
+  postgres-data:

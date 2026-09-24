@@ -1,0 +1,66 @@
+# docker compose -p fx-quotes-load -f compose.load.yaml up --build -d
+name: fx-quotes-load
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: loadquotes
+      POSTGRES_USER: loadquotes
+      POSTGRES_PASSWORD: local-load-only
+    volumes:
+      - load-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "loadquotes", "-d", "loadquotes"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+
+  fixture-provider:
+    build:
+      context: .
+      dockerfile: test/fixture/provider/Dockerfile
+    environment:
+      FX_QUOTES_FIXTURE_RATE: ${FX_QUOTES_FIXTURE_RATE:-0.9234}
+      FX_QUOTES_FIXTURE_SOURCE_DATE: ${FX_QUOTES_FIXTURE_SOURCE_DATE:-2026-09-22}
+      FX_QUOTES_FIXTURE_LATENCY: ${FX_QUOTES_FIXTURE_LATENCY:-100ms}
+      FX_QUOTES_FIXTURE_STATUS: ${FX_QUOTES_FIXTURE_STATUS:-200}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8090/health/live"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  app:
+    build: .
+    environment:
+      FX_QUOTES_LISTEN_ADDR: :8080
+      FX_QUOTES_DATABASE_HOST: postgres
+      FX_QUOTES_DATABASE_PORT: "5432"
+      FX_QUOTES_DATABASE_USER: loadquotes
+      FX_QUOTES_DATABASE_PASSWORD: local-load-only
+      FX_QUOTES_DATABASE_NAME: loadquotes
+      FX_QUOTES_DATABASE_INSECURE_HOST: postgres
+      FX_QUOTES_PROVIDER_URL: http://fixture-provider:8090
+      FX_QUOTES_PROVIDER_TIMEOUT: 2s
+      FX_QUOTES_WORKER_COUNT: ${FX_QUOTES_LOAD_WORKER_COUNT:-64}
+      FX_QUOTES_MAX_ACTIVE: ${FX_QUOTES_LOAD_MAX_ACTIVE:-100}
+      FX_QUOTES_POLL_INTERVAL: 25ms
+      FX_QUOTES_RECOVERY_INTERVAL: 250ms
+      FX_QUOTES_LEASE_DURATION: 3s
+      FX_QUOTES_LOG_LEVEL: ${FX_QUOTES_LOAD_LOG_LEVEL:-error}
+    ports:
+      - "127.0.0.1:${FX_QUOTES_LOAD_HOST_PORT:-18080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      fixture-provider:
+        condition: service_healthy
+    stop_grace_period: 25s
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/health/ready"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+volumes:
+  load-postgres-data:

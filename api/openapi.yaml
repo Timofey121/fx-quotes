@@ -1,0 +1,486 @@
+openapi: 3.1.0
+info:
+  title: API асинхронного обновления валютных курсов
+  version: 1.0.0
+servers:
+  - url: /
+paths:
+  /v1/quote-updates:
+    parameters:
+      - { $ref: '#/components/parameters/RequestID' }
+    post:
+      operationId: createQuoteUpdate
+      summary: Создать обновление или вернуть существующее
+      description: |
+        Новая операция сохраняется как pending и возвращается с кодом 202.
+        Курс запрашивает фоновый обработчик.
+        Тот же Idempotency-Key и пара: 200 с текущим состоянием, включая failed;
+        другая пара: 409. Повтор проверяется до лимита очереди. Без ключа операция всегда новая.
+        Ключ непрозрачный, регистрозависимый; запятая: часть значения. Дубли заголовка запрещены.
+        Тело до 1024 байт с пробелами: один JSON-объект, единственное поле pair в нижнем регистре.
+        Лишние или повторные поля, дополнительный JSON, null и иной регистр имени поля запрещены.
+        Параметры application/json допустимы, например charset=utf-8.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Одно значение из видимых ASCII-символов; пробелы не обрезаются.
+          schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$' }
+          example: order-42,attempt-A
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [pair]
+              properties:
+                pair: { $ref: '#/components/schemas/Pair' }
+            example: { pair: EUR/MXN }
+      responses:
+        '202': { $ref: '#/components/responses/Accepted' }
+        '200': { $ref: '#/components/responses/Replay' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '405': { $ref: '#/components/responses/MethodNotAllowed' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMedia' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/quote-updates/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/RequestID' }
+      - name: id
+        in: path
+        required: true
+        description: UUID в нижнем регистре с дефисами. Неверный формат даёт 400, неизвестный ID даёт 404.
+        schema: { $ref: '#/components/schemas/UUID' }
+    get:
+      operationId: getQuoteUpdate
+      summary: Получить состояние операции
+      description: |
+        Любое состояние: 200. quote есть только у completed, failure_code: у failed.
+        Аренда, попытки, расписание повторов и ошибки провайдера/БД скрыты.
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '405': { $ref: '#/components/responses/MethodNotAllowed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/StorageUnavailable' }
+  /v1/quotes/latest:
+    parameters:
+      - { $ref: '#/components/parameters/RequestID' }
+    get:
+      operationId: getLatestQuote
+      summary: Получить последний успешный курс
+      description: |
+        Ровно один query-параметр pair, без других параметров. Пропуск, пустое,
+        повторное, неподдерживаемое или некорректное значение: 400.
+        Кодируйте / как %2F: ?pair=EUR%2FMXN. До первого успешного обновления: 404.
+        Чтение не запускает обновление; пока новое задание выполняется или завершилось ошибкой,
+        возвращается прежний успешный курс. Выбор результата: source_date, затем порядок приёма.
+      parameters:
+        - name: pair
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Pair' }
+          example: EUR/MXN
+      responses:
+        '200': { $ref: '#/components/responses/Quote' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '405': { $ref: '#/components/responses/MethodNotAllowed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/StorageUnavailable' }
+  /health/live:
+    parameters:
+      - { $ref: '#/components/parameters/RequestID' }
+    get:
+      operationId: getLiveness
+      summary: Проверить процесс без зависимостей
+      responses:
+        '200': { $ref: '#/components/responses/Healthy' }
+        '405': { $ref: '#/components/responses/MethodNotAllowed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /health/ready:
+    parameters:
+      - { $ref: '#/components/parameters/RequestID' }
+    get:
+      operationId: getReadiness
+      summary: Проверить готовность хранилища
+      description: Проверяет готовность приложения и связь с БД в пределах секунды; не проверяет провайдера и продвижение очереди.
+      responses:
+        '200': { $ref: '#/components/responses/Healthy' }
+        '405': { $ref: '#/components/responses/MethodNotAllowed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/StorageUnavailable' }
+  /openapi.yaml:
+    parameters:
+      - { $ref: '#/components/parameters/RequestID' }
+    get:
+      operationId: getOpenAPI
+      summary: Получить встроенный OpenAPI-документ
+      responses:
+        '200':
+          description: Исходный YAML OpenAPI 3.1.
+          headers:
+            X-Request-ID: { $ref: '#/components/headers/RequestID' }
+            X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+          content:
+            application/yaml:
+              schema: { type: string }
+              example: 'openapi: 3.1.0'
+        '405': { $ref: '#/components/responses/MethodNotAllowed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+components:
+  parameters:
+    RequestID:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: |
+        Одно значение длиной от 1 до 128 видимых ASCII-символов сохраняется без изменений.
+        При отсутствии, дублях или ошибке сервер создаёт 32-символьный hex в нижнем регистре,
+        не отклоняя запрос. Итоговый ID возвращается клиенту и пишется в лог.
+      schema: { type: string }
+      example: client-123
+  headers:
+    RequestID:
+      description: ID клиента или сгенерированный 32-символьный hex.
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$' }
+      example: client-123
+    NoSniff:
+      description: Запрещает браузеру определять MIME-тип по содержимому.
+      required: true
+      schema: { type: string, const: nosniff }
+    Location:
+      description: Относительный URI для опроса состояния операции.
+      required: true
+      schema: { type: string, pattern: '^/v1/quote-updates/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' }
+      example: /v1/quote-updates/6c71f3d0-30ba-4b12-90e3-a2f07eb8dc98
+    Allow:
+      description: HTTP-метод, поддерживаемый маршрутом.
+      required: true
+      schema: { type: string, enum: [GET, POST] }
+    RetryAfter:
+      description: Обязателен только для queue_full; повторите запрос через секунду.
+      schema: { type: string, const: '1' }
+      example: '1'
+  schemas:
+    Pair:
+      type: string
+      enum: [EUR/MXN, MXN/EUR, EUR/USD, USD/EUR, USD/MXN, MXN/USD]
+      description: Направленная пара, верхний регистр, без пробелов и нормализации.
+      example: EUR/MXN
+    UUID:
+      type: string
+      format: uuid
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      example: 6c71f3d0-30ba-4b12-90e3-a2f07eb8dc98
+    Timestamp:
+      type: string
+      format: date-time
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.[0-9]{0,8}[1-9])?Z$'
+      description: UTC, RFC3339Nano с Z, без конечных нулей дробной части.
+      example: '2026-09-22T12:00:00.123456789Z'
+    Rate:
+      type: string
+      maxLength: 31
+      pattern: '^([1-9][0-9]{0,14}(\.[0-9]{0,14}[1-9])?|0\.[0-9]{0,14}[1-9])$'
+      description: |
+        Точное положительное десятичное число: до 15 цифр до и после точки, без float.
+        Без знака, экспоненты, лишних ведущих и конечных дробных нулей: 18.500 → 18.5.
+      example: '18.5'
+    Quote:
+      type: object
+      additionalProperties: false
+      required: [pair, rate, provider, source_date, updated_at]
+      properties:
+        pair: { $ref: '#/components/schemas/Pair' }
+        rate: { $ref: '#/components/schemas/Rate' }
+        provider: { type: string, minLength: 1, example: frankfurter-ecb }
+        source_date:
+          type: string
+          format: date
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: Дата курса у провайдера, YYYY-MM-DD.
+          example: '2026-09-21'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: Время сохранённого завершения операции, не дата курса.
+    Operation:
+      oneOf:
+        - { $ref: '#/components/schemas/Pending' }
+        - { $ref: '#/components/schemas/Processing' }
+        - { $ref: '#/components/schemas/Completed' }
+        - { $ref: '#/components/schemas/Failed' }
+      discriminator:
+        propertyName: status
+        mapping:
+          pending: '#/components/schemas/Pending'
+          processing: '#/components/schemas/Processing'
+          completed: '#/components/schemas/Completed'
+          failed: '#/components/schemas/Failed'
+    Pending:
+      type: object
+      additionalProperties: false
+      required: [id, pair, status, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/UUID' }
+        pair: { $ref: '#/components/schemas/Pair' }
+        status: { type: string, const: pending }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+      example: { id: 6c71f3d0-30ba-4b12-90e3-a2f07eb8dc98, pair: EUR/MXN, status: pending, created_at: '2026-09-22T11:00:00.987654321Z' }
+    Processing:
+      type: object
+      additionalProperties: false
+      required: [id, pair, status, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/UUID' }
+        pair: { $ref: '#/components/schemas/Pair' }
+        status: { type: string, const: processing }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+      example: { id: 6c71f3d0-30ba-4b12-90e3-a2f07eb8dc98, pair: EUR/MXN, status: processing, created_at: '2026-09-22T11:00:00.987654321Z' }
+    Completed:
+      type: object
+      additionalProperties: false
+      required: [id, pair, status, created_at, quote]
+      properties:
+        id: { $ref: '#/components/schemas/UUID' }
+        pair: { $ref: '#/components/schemas/Pair' }
+        status: { type: string, const: completed }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        quote: { $ref: '#/components/schemas/Quote' }
+      example: { id: 6c71f3d0-30ba-4b12-90e3-a2f07eb8dc98, pair: EUR/MXN, status: completed, created_at: '2026-09-22T11:00:00.987654321Z', quote: { pair: EUR/MXN, rate: '18.5', provider: frankfurter-ecb, source_date: '2026-09-21', updated_at: '2026-09-22T12:00:00.123456789Z' } }
+    Failed:
+      type: object
+      additionalProperties: false
+      required: [id, pair, status, created_at, failure_code]
+      properties:
+        id: { $ref: '#/components/schemas/UUID' }
+        pair: { $ref: '#/components/schemas/Pair' }
+        status: { type: string, const: failed }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        failure_code: { type: string, enum: [provider_permanent, attempts_exhausted] }
+      example: { id: 6c71f3d0-30ba-4b12-90e3-a2f07eb8dc98, pair: EUR/MXN, status: failed, created_at: '2026-09-22T11:00:00.987654321Z', failure_code: attempts_exhausted }
+    Healthy:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, const: ok }
+    InvalidRequestProblem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri, const: 'urn:fx-quotes:problem:invalid_request' }
+        title: { type: string, const: 'Bad Request' }
+        status: { type: integer, const: 400 }
+        code: { type: string, const: invalid_request }
+      example: { type: 'urn:fx-quotes:problem:invalid_request', title: 'Bad Request', status: 400, code: invalid_request }
+    NotFoundProblem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri, const: 'urn:fx-quotes:problem:not_found' }
+        title: { type: string, const: 'Not Found' }
+        status: { type: integer, const: 404 }
+        code: { type: string, const: not_found }
+      example: { type: 'urn:fx-quotes:problem:not_found', title: 'Not Found', status: 404, code: not_found }
+    MethodNotAllowedProblem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri, const: 'urn:fx-quotes:problem:method_not_allowed' }
+        title: { type: string, const: 'Method Not Allowed' }
+        status: { type: integer, const: 405 }
+        code: { type: string, const: method_not_allowed }
+      example: { type: 'urn:fx-quotes:problem:method_not_allowed', title: 'Method Not Allowed', status: 405, code: method_not_allowed }
+    ConflictProblem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri, const: 'urn:fx-quotes:problem:idempotency_conflict' }
+        title: { type: string, const: 'Conflict' }
+        status: { type: integer, const: 409 }
+        code: { type: string, const: idempotency_conflict }
+      example: { type: 'urn:fx-quotes:problem:idempotency_conflict', title: 'Conflict', status: 409, code: idempotency_conflict }
+    TooLargeProblem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri, const: 'urn:fx-quotes:problem:payload_too_large' }
+        title: { type: string, const: 'Request Entity Too Large' }
+        status: { type: integer, const: 413 }
+        code: { type: string, const: payload_too_large }
+      example: { type: 'urn:fx-quotes:problem:payload_too_large', title: 'Request Entity Too Large', status: 413, code: payload_too_large }
+    UnsupportedMediaProblem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri, const: 'urn:fx-quotes:problem:unsupported_media_type' }
+        title: { type: string, const: 'Unsupported Media Type' }
+        status: { type: integer, const: 415 }
+        code: { type: string, const: unsupported_media_type }
+      example: { type: 'urn:fx-quotes:problem:unsupported_media_type', title: 'Unsupported Media Type', status: 415, code: unsupported_media_type }
+    QueueFullProblem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri, const: 'urn:fx-quotes:problem:queue_full' }
+        title: { type: string, const: 'Service Unavailable' }
+        status: { type: integer, const: 503 }
+        code: { type: string, const: queue_full }
+      example: { type: 'urn:fx-quotes:problem:queue_full', title: 'Service Unavailable', status: 503, code: queue_full }
+    StorageUnavailableProblem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri, const: 'urn:fx-quotes:problem:storage_unavailable' }
+        title: { type: string, const: 'Service Unavailable' }
+        status: { type: integer, const: 503 }
+        code: { type: string, const: storage_unavailable }
+      example: { type: 'urn:fx-quotes:problem:storage_unavailable', title: 'Service Unavailable', status: 503, code: storage_unavailable }
+    InternalErrorProblem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri, const: 'urn:fx-quotes:problem:internal_error' }
+        title: { type: string, const: 'Internal Server Error' }
+        status: { type: integer, const: 500 }
+        code: { type: string, const: internal_error }
+      example: { type: 'urn:fx-quotes:problem:internal_error', title: 'Internal Server Error', status: 500, code: internal_error }
+  responses:
+    Accepted:
+      description: Новая сохранённая операция в состоянии pending.
+      headers:
+        X-Request-ID: { $ref: '#/components/headers/RequestID' }
+        X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+        Location: { $ref: '#/components/headers/Location' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Pending' }
+    Replay:
+      description: Текущее состояние без нового задания.
+      headers:
+        X-Request-ID: { $ref: '#/components/headers/RequestID' }
+        X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+        Location: { $ref: '#/components/headers/Location' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Operation' }
+    Operation:
+      description: Сохранённая операция.
+      headers:
+        X-Request-ID: { $ref: '#/components/headers/RequestID' }
+        X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Operation' }
+    Quote:
+      description: Последний успешно полученный курс.
+      headers:
+        X-Request-ID: { $ref: '#/components/headers/RequestID' }
+        X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Quote' }
+          example: { pair: EUR/MXN, rate: '18.5', provider: frankfurter-ecb, source_date: '2026-09-21', updated_at: '2026-09-22T12:00:00.123456789Z' }
+    Healthy:
+      description: Проверка пройдена.
+      headers:
+        X-Request-ID: { $ref: '#/components/headers/RequestID' }
+        X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Healthy' }
+          example: { status: ok }
+    InvalidRequest:
+      description: Некорректный запрос.
+      headers:
+        X-Request-ID: { $ref: '#/components/headers/RequestID' }
+        X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/InvalidRequestProblem' }
+    NotFound:
+      description: Ресурс не найден.
+      headers:
+        X-Request-ID: { $ref: '#/components/headers/RequestID' }
+        X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/NotFoundProblem' }
+    MethodNotAllowed:
+      description: Метод не поддерживается.
+      headers:
+        X-Request-ID: { $ref: '#/components/headers/RequestID' }
+        X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+        Allow: { $ref: '#/components/headers/Allow' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/MethodNotAllowedProblem' }
+    Conflict:
+      description: Ключ уже связан с другой парой.
+      headers:
+        X-Request-ID: { $ref: '#/components/headers/RequestID' }
+        X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ConflictProblem' }
+    TooLarge:
+      description: Тело больше 1024 байт.
+      headers:
+        X-Request-ID: { $ref: '#/components/headers/RequestID' }
+        X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/TooLargeProblem' }
+    UnsupportedMedia:
+      description: Неподдерживаемый тип содержимого.
+      headers:
+        X-Request-ID: { $ref: '#/components/headers/RequestID' }
+        X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/UnsupportedMediaProblem' }
+    StorageUnavailable:
+      description: Хранилище недоступно.
+      headers:
+        X-Request-ID: { $ref: '#/components/headers/RequestID' }
+        X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/StorageUnavailableProblem' }
+    InternalError:
+      description: Внутренняя ошибка сервера.
+      headers:
+        X-Request-ID: { $ref: '#/components/headers/RequestID' }
+        X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/InternalErrorProblem' }
+    Unavailable:
+      description: Хранилище недоступно или очередь заполнена. Заголовок Retry-After возвращается только для queue_full.
+      headers:
+        X-Request-ID: { $ref: '#/components/headers/RequestID' }
+        X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/problem+json:
+          schema:
+            oneOf:
+              - { $ref: '#/components/schemas/QueueFullProblem' }
+              - { $ref: '#/components/schemas/StorageUnavailableProblem' }

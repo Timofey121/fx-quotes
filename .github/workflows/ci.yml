@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: fxquotes
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d fxquotes"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/fxquotes?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Check formatting
+        run: make fmt-check
+      - name: Vet
+        run: make vet
+      - name: Verify smoke dependencies
+        run: command -v curl && command -v jq
+      - name: Unit, integration, race, and OpenAPI tests
+        run: make test-race
+      - name: Verify integration and end-to-end tests
+        run: make test-integration
+      - name: Check known vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+      - name: Build
+        run: make build
+      - name: Validate Compose file
+        run: make compose-config
+      - name: Validate load-test Compose profile
+        run: make compose-load-config
+      - name: Build container image
+        run: docker build --tag fx-quotes:ci .
+      - name: Start isolated runtime test
+        run: docker compose --env-file /dev/null -p fx-quotes-ci -f compose.load.yaml up --build -d --wait --wait-timeout 120
+      - name: Smoke test and repeatability
+        env:
+          FX_QUOTES_SMOKE_URL: http://127.0.0.1:18080
+          FX_QUOTES_SMOKE_EXPECTED_RATE: "0.9234"
+        run: |
+          make smoke
+          make smoke
+      - name: Runtime diagnostics
+        if: failure()
+        run: docker compose -p fx-quotes-ci -f compose.load.yaml logs --no-color --tail 100
+      - name: Remove isolated test data
+        if: always()
+        run: docker compose -p fx-quotes-ci -f compose.load.yaml down --volumes --remove-orphans
